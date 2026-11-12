@@ -248,9 +248,14 @@ class FeatureFusionBlock_custom(nn.Module):
                 shape = int(self.width_ratio * 2 * output.shape[2])
             output = F.interpolate(output, size=(2 * output.shape[2], shape), mode="bilinear")
         else:
-            output = nn.functional.interpolate(
-                output, scale_factor=2, mode="bilinear", align_corners=self.align_corners
-            )
+            if output.device.type == "npu" and torch.compiler.is_compiling():
+                from mapanything.utils.npu_graph_ops import bilinear
+                output = bilinear(output, 2 * output.shape[2], 2 * output.shape[3],
+                                  self.align_corners, 2.0, 2.0)
+            else:
+                output = nn.functional.interpolate(
+                    output, scale_factor=2, mode="bilinear", align_corners=self.align_corners
+                )
         output = self.out_conv(output)  # This causes inconsistent gradient stride. don't know why.
         return output
 

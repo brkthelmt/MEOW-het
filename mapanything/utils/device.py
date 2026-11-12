@@ -7,6 +7,9 @@
 Utility functions for managing computation device
 """
 
+import importlib.util
+import os
+
 import numpy as np
 import torch
 
@@ -98,13 +101,20 @@ def get_device(preferred=None):
     Returns:
         torch.device: The best available device
     """
+    preferred = preferred or os.environ.get("MEOW_DEVICE")
     if preferred is not None:
+        if str(preferred).split(":")[0] == "npu":
+            import torch_npu  # noqa: F401
         if isinstance(preferred, str):
             return torch.device(preferred)
         return preferred
 
     if torch.cuda.is_available():
         return torch.device("cuda")
+    if importlib.util.find_spec("torch_npu") is not None:
+        import torch_npu  # noqa: F401
+        if torch.npu.is_available():
+            return torch.device("npu")
     if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
         return torch.device("mps")
     return torch.device("cpu")
@@ -129,6 +139,8 @@ def get_device_capabilities(device):
 
     if device_type == "cuda":
         capabilities["bf16_supported"] = torch.cuda.is_bf16_supported()
+    elif device_type == "npu":
+        capabilities["bf16_supported"] = torch.npu.is_bf16_supported()
     elif device_type == "mps":
         capabilities["bf16_supported"] = False
     else:
@@ -147,7 +159,7 @@ def is_memory_query_supported(device):
         bool: True if memory operations like mem_get_info() are supported
     """
     device_type = device.type if hasattr(device, "type") else str(device).split(":")[0]
-    return device_type == "cuda"
+    return device_type in ("cuda", "npu")
 
 
 def empty_cache(device=None):
@@ -163,6 +175,8 @@ def empty_cache(device=None):
 
     if device_type == "cuda" and torch.cuda.is_available():
         torch.cuda.empty_cache()
+    elif device_type == "npu":
+        torch.npu.empty_cache()
     elif device_type == "mps" and hasattr(torch, "mps"):
         torch.mps.empty_cache()
 
@@ -208,3 +222,22 @@ def get_autocast_device_type(device):
     if hasattr(device, "type"):
         return device.type
     return str(device).split(":")[0]
+
+
+def synchronize(device=None):
+    device = get_device(device)
+    if device.type in ("cuda", "npu"):
+        getattr(torch, device.type).synchronize(device)
+
+
+def collective_device():
+    """Gloo statistics stay on CPU; accelerator collectives use their device."""
+    if torch.distributed.is_initialized():
+        backend = torch.distributed.get_backend()
+        if backend == "gloo":
+            return torch.device("cpu")
+        if backend == "hccl":
+            return torch.device("npu", torch.npu.current_device())
+        if backend == "nccl":
+            return torch.device("cuda", torch.cuda.current_device())
+    return get_device()

@@ -39,6 +39,7 @@ def squeeze_uv_map(uv, original_wh, processed_wh):
 
 def main():
     import torch
+    from mapanything.utils.device import get_device, empty_cache
     ap = argparse.ArgumentParser()
     ap.add_argument("--tuples", required=True)
     ap.add_argument("--frames-root", default=None,
@@ -46,7 +47,7 @@ def main():
     ap.add_argument("--ckpt", required=True,
                     help="NAME=path[:wrap] — same spec as eval_2d3ds_pose_v2")
     ap.add_argument("--out", required=True, help="preds root (model name appended)")
-    ap.add_argument("--device", default="cuda:0")
+    ap.add_argument("--device", default=str(get_device()))
     ap.add_argument("--pano", nargs="?", const="on", default="off",
                     choices=["off", "on", "auto", "label", "force"],
                     help="pano_wrap flag: bare --pano == on (whole set is ERP, "
@@ -181,17 +182,17 @@ def main():
         if k % 10 == 0 or k == len(tups) - 1:
             print(f"[ours:{name}] {k + 1}/{len(tups)} tuples "
                   f"(V={len(preds)}, pts={len(pts)}, {tt.sec:.2f}s)")
-        if args.device.startswith("cuda"):
-            torch.cuda.empty_cache()
+        empty_cache(args.device)
       except Exception as e:
         n_fail += 1
         print(f"[ours:{name}] TUPLE FAILED {tup['id']}: {e!r} (skip)")
-        if args.device.startswith("cuda"):
-            torch.cuda.empty_cache()
+        empty_cache(args.device)
     if n_fail:
         print(f"[ours:{name}] {n_fail} tuples failed and were skipped")
     timing_summary(f"ours:{name}", secs, vrams)
     print(f"[ours:{name}] DONE -> {out_dir}")
+    if n_fail:
+        raise SystemExit(f"Prediction incomplete: {n_fail}/{len(tups)} tuples failed")
 
 
 if __name__ == "__main__":

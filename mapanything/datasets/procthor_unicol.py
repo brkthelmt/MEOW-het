@@ -321,6 +321,11 @@ class ProcThorUnicol(BaseDataset):
         # the string, and a bare "cuda" would put every worker on the first GPU.
         if camera_sampling_device == "cuda" and torch.cuda.is_available():
             camera_sampling_device = f"cuda:{torch.cuda.current_device()}"
+        # Preserve FP64 sampling semantics on Ascend until FP32 sampling is validated.
+        if os.environ.get("MEOW_DEVICE", "").startswith("npu") and camera_sampling_device.startswith("cuda"):
+            camera_sampling_device = "cpu"
+        if camera_sampling_device.startswith("npu"):
+            raise ValueError("NPU camera sampling is not validated in FP64; use camera_sampling_device='cpu'.")
         self.camera_sampling_device = camera_sampling_device
         self._camera_sampler = None  # created lazily
         self.camera_sampling_photo_extras = bool(camera_sampling_photo_extras)

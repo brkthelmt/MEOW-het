@@ -33,6 +33,8 @@ def build_model_with_ar(device: str, variant: str = ""):
             "machine=default",
             "model/task=aug_training",
             "++model.task.ar_prob=1.0",
+            # A complete MEOW checkpoint is loaded by the caller.
+            "++model.encoder.torch_hub_pretrained=false",
         ]
         + VARIANT_OVERRIDES[variant],
     )

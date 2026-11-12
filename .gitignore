@@ -8,3 +8,4 @@ __pycache__/
 /checkpoints/
 /experiments/
 /work/
+/export_only_prof_dir/

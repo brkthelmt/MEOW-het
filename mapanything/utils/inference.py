@@ -10,6 +10,7 @@
 Inference utilities.
 """
 
+import os
 from typing import Any, Dict, List
 
 import numpy as np
@@ -329,6 +330,11 @@ def postprocess_model_outputs_for_inference(
         multiview_conf_depth_abs_thresh: Absolute depth threshold for multi-view inlier matching. Defaults to 0.02.
         multiview_conf_depth_rel_thresh: Relative depth threshold for multi-view inlier matching. Defaults to 0.02.
 
+    On NPU, MEOW_GEOMETRY_POSTPROCESS=tensor opts into experimental device-side
+    normal/edge/mask filtering. The default is numpy: small FP32 normal errors
+    can change binary edge masks, so Tensor filtering is not bitwise equivalent.
+    RGB denormalization and intrinsics recovery retain their existing paths.
+
     Returns:
         List of processed output dictionaries containing:
             - All original raw outputs (after masking dense geometry outputs if requested)
@@ -436,8 +442,39 @@ def postprocess_model_outputs_for_inference(
         # Single view: return all ones
         processed_outputs[0]["conf"] = torch.ones_like(processed_outputs[0]["conf"])
 
+    geometry_backend = os.environ.get("MEOW_GEOMETRY_POSTPROCESS", "numpy")
+    if geometry_backend not in ("numpy", "tensor"):
+        raise ValueError("MEOW_GEOMETRY_POSTPROCESS must be 'numpy' or 'tensor'")
     # Second loop: Apply masking (step 6) using the (possibly replaced) confidence
     for processed_output in processed_outputs:
+        # Keep the NumPy implementation as the reference and a selectable A/B
+        # baseline. Only the normal/edge/mask pipeline is moved to NPU here.
+        if (apply_mask and processed_output.get("pts3d") is not None
+                and processed_output["pts3d"].device.type == "npu"
+                and geometry_backend == "tensor"):
+            from mapanything.utils.geometry_tensor import geometry_mask_tensor
+            final_mask = processed_output.get("non_ambiguous_mask")
+            if apply_confidence_mask and "conf" in processed_output:
+                # Optional quantile retains its existing CPU semantics; it is
+                # disabled in the published benchmark and is outside this port.
+                confidences = processed_output["conf"].cpu()
+                threshold = torch.quantile(confidences.reshape(confidences.shape[0], -1),
+                                           confidence_percentile / 100.0, dim=1)[:, None, None]
+                conf_mask = (confidences > threshold).to(processed_output["pts3d"].device)
+                final_mask = conf_mask if final_mask is None else final_mask & conf_mask
+            if final_mask is not None:
+                if mask_edges:
+                    depth = processed_output.get("depth_along_ray", processed_output.get("depth_z"))
+                    with torch.autograd.profiler.record_function("MEOW::geometry_mask_tensor"):
+                        final_mask = geometry_mask_tensor(
+                            processed_output["pts3d"], depth.squeeze(-1), final_mask,
+                            edge_normal_threshold, edge_depth_threshold)
+                final_mask = final_mask.unsqueeze(-1)
+                for key in ("pts3d", "pts3d_cam", "depth_along_ray", "depth_z"):
+                    if key in processed_output:
+                        processed_output[key] = processed_output[key] * final_mask
+                processed_output["mask"] = final_mask
+            continue
         # 6. Apply comprehensive mask to dense geometry outputs if requested
         if apply_mask:
             final_mask = None

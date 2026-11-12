@@ -198,3 +198,7 @@ assets/             本页使用的图片与动画
 ## 许可证
 
 代码按 [Apache License 2.0](LICENSE) 发布，基于 MapAnything（Apache 2.0）与 UniCeption（BSD 3-Clause）。相关许可及运行时数据、资产说明见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+
+## Ascend 910B / TileLang
+
+当前 NPU 适配、K1/K2/K3 设计与验证入口见 [当前设计](docs/ascend_910b_design.md)、[ACLGraph 部署](docs/ascend_910b_aclgraph.md)。

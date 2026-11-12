@@ -36,6 +36,7 @@ from mapanything.models import init_model
 from mapanything.train import logical_split
 from mapanything.train.losses import *  # noqa
 from mapanything.utils.inference import loss_of_one_batch_multi_view
+from mapanything.utils.device import get_device, empty_cache
 from mapanything.utils.train_tools import NativeScalerWithGradNormCount as NativeScaler
 
 # Enable TF32 precision if supported (for GPU >= Ampere and PyTorch >= 1.12)
@@ -72,8 +73,7 @@ def train(args):
     print("job dir: {}".format(os.path.dirname(os.path.realpath(__file__))))
     print("{}".format(args).replace(", ", ",\n"))
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    device = torch.device(device)
+    device = get_device()
 
     # Fix the seed
     seed = args.train_params.seed + train_tools.get_rank()
@@ -161,7 +161,7 @@ def train(args):
         )
         print(model.load_state_dict(ckpt["model"], strict=False))
         del ckpt
-        torch.cuda.empty_cache()
+        empty_cache(device)
 
     # Init model for DDP training
     if args.distributed.distributed:
@@ -188,7 +188,10 @@ def train(args):
         param_groups, lr=args.train_params.lr, betas=(0.9, 0.95)
     )
     print(optimizer)
-    loss_scaler = NativeScaler()
+    loss_scaler = NativeScaler(
+        enabled=bool(args.train_params.amp) and args.train_params.amp_dtype == "fp16",
+        device=device,
+    )
 
     def write_log_stats(epoch, train_stats, test_stats):
         """
@@ -682,8 +685,7 @@ def test_one_epoch(
         dict: Dictionary containing evaluation metrics (average and median values).
     """
     # Release cached allocations of the training epoch before validation
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
+    empty_cache(device)
     model.eval()
     metric_logger = train_tools.MetricLogger(delimiter="  ")
     metric_logger.meters = defaultdict(
@@ -743,7 +745,6 @@ def test_one_epoch(
             log_writer.add_scalar(prefix + "_" + name, val, 1000 * epoch)
 
     # Release cached validation allocations before returning to training
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
+    empty_cache(device)
 
     return results

@@ -2,6 +2,7 @@
 Encoder Class for DINOv2
 """
 
+import os
 from typing import List, Optional, Union
 
 import torch
@@ -85,21 +86,28 @@ class DINOv2Encoder(UniCeptionViTEncoderBase):
             },
         }
 
-        # Load the pretrained DINOv2 model from torch hub
-        print(f"Loading pretrained {DINO_MODELS[self.with_registers][self.version]} from torch hub")
-        try:  # Requires internet access
-            self.model = torch.hub.load(
-                "facebookresearch/dinov2",
-                DINO_MODELS[self.with_registers][self.version],
-                force_reload=torch_hub_force_reload,
+        if os.environ.get("MEOW_DINOV2_SOURCE") == "bundled":
+            from mapanything.models.external.dinov2.hub import backbones
+            factory = getattr(backbones, DINO_MODELS[self.with_registers][self.version])
+            self.model = factory(
                 pretrained=torch_hub_pretrained if pretrained_checkpoint_path is None else False,
             )
-        except:  # Load from cache
-            self.model = torch.hub.load(
-                "facebookresearch/dinov2",
-                DINO_MODELS[self.with_registers][self.version],
-                pretrained=torch_hub_pretrained if pretrained_checkpoint_path is None else False,
-            )
+        else:
+            # Load the pretrained DINOv2 model from torch hub
+            print(f"Loading pretrained {DINO_MODELS[self.with_registers][self.version]} from torch hub")
+            try:  # Requires internet access
+                self.model = torch.hub.load(
+                    "facebookresearch/dinov2",
+                    DINO_MODELS[self.with_registers][self.version],
+                    force_reload=torch_hub_force_reload,
+                    pretrained=torch_hub_pretrained if pretrained_checkpoint_path is None else False,
+                )
+            except:  # Load from cache
+                self.model = torch.hub.load(
+                    "facebookresearch/dinov2",
+                    DINO_MODELS[self.with_registers][self.version],
+                    pretrained=torch_hub_pretrained if pretrained_checkpoint_path is None else False,
+                )
 
         del (
             self.model.mask_token

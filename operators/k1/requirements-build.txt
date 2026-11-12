@@ -1,0 +1,2 @@
+# Install in the repository .venv on the ARM64 build server.
+cmake==3.31.10

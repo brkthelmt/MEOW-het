@@ -706,7 +706,7 @@ class MapAnything(nn.Module, PyTorchModelHubMixin):
                 else:
                     print(self.load_state_dict(ckpt["model"]))
                 del ckpt
-                torch.cuda.empty_cache()
+                empty_cache(self.device)
             else:
                 print(
                     f"Loading pretrained MapAnything weights from {self.pretrained_checkpoint_path} for specific submodules: {self.specific_pretrained_submodules} ..."
@@ -722,7 +722,7 @@ class MapAnything(nn.Module, PyTorchModelHubMixin):
                             filtered_ckpt[ckpt_key] = ckpt_value
                 print(self.load_state_dict(filtered_ckpt, strict=False))
                 del ckpt, filtered_ckpt
-                torch.cuda.empty_cache()
+                empty_cache(self.device)
 
     def _encode_n_views(self, views):
         """
@@ -844,9 +844,10 @@ class MapAnything(nn.Module, PyTorchModelHubMixin):
                 ] = False
 
         # Initialize the pose quats and trans for all views as identity
-        pose_quats_across_views = torch.tensor(
-            [0.0, 0.0, 0.0, 1.0], dtype=dtype, device=device
-        ).repeat(batch_size_per_view * num_views, 1)  # (q_x, q_y, q_z, q_w)
+        pose_quats_across_views = torch.zeros(
+            (batch_size_per_view * num_views, 4), dtype=dtype, device=device
+        )
+        pose_quats_across_views[:, 3] = 1.0  # (q_x, q_y, q_z, q_w)
         pose_trans_across_views = torch.zeros(
             (batch_size_per_view * num_views, 3), dtype=dtype, device=device
         )
@@ -984,10 +985,11 @@ class MapAnything(nn.Module, PyTorchModelHubMixin):
         _, _, height, width = views[0]["img"].shape
 
         # Decide to use randomly sampled sparse depth or dense depth
-        if torch.rand(1) < self.geometric_input_config["sparse_depth_prob"]:
-            use_sparse_depth = True
+        sparse_prob = self.geometric_input_config["sparse_depth_prob"]
+        if sparse_prob == 0.0 or sparse_prob == 1.0:
+            use_sparse_depth = sparse_prob == 1.0
         else:
-            use_sparse_depth = False
+            use_sparse_depth = bool(torch.rand(1) < sparse_prob)
 
         # Get the depths for all the views
         depth_list = []
@@ -1195,12 +1197,15 @@ class MapAnything(nn.Module, PyTorchModelHubMixin):
             ] = metric_scale_mask
 
         # Turn off indication of metric scale samples based on the pose_scale_norm_all_prob
-        pose_norm_all_mask = (
-            torch.rand(batch_size_per_view * num_views)
-            < self.geometric_input_config["pose_scale_norm_all_prob"]
-        )
-        if pose_norm_all_mask.any():
-            metric_scale_pose_trans_mask[pose_norm_all_mask] = False
+        pose_norm_prob = self.geometric_input_config["pose_scale_norm_all_prob"]
+        if pose_norm_prob == 1.0:
+            metric_scale_pose_trans_mask = torch.zeros_like(metric_scale_pose_trans_mask)
+        elif pose_norm_prob != 0.0:
+            pose_norm_all_mask = (
+                torch.rand(batch_size_per_view * num_views) < pose_norm_prob
+            )
+            if pose_norm_all_mask.any():
+                metric_scale_pose_trans_mask[pose_norm_all_mask] = False
 
         # Get the scale norm factor for all the samples and scale the pose translations
         pose_trans_across_views = torch.split(
@@ -1548,10 +1553,15 @@ class MapAnything(nn.Module, PyTorchModelHubMixin):
         """
         device = self.device
 
-        if device.type == "cuda":
+        # The 680 MiB estimate below was profiled on CUDA. Ascend convolution
+        # workspace differs; use explicit minibatch_size to tune NPU inference.
+        if device.type == "npu":
+            return 1
+
+        if device.type in ("cuda", "npu"):
             # Get available GPU memory
             empty_cache(device)
-            available_memory = torch.cuda.mem_get_info()[0]  # Free memory in bytes
+            available_memory = getattr(torch, device.type).mem_get_info(device)[0]  # Free memory in bytes
             usable_memory = (
                 available_memory * memory_safety_factor
             )  # Use safety factor to avoid OOM
@@ -1612,6 +1622,7 @@ class MapAnything(nn.Module, PyTorchModelHubMixin):
 
     def _dense_head_pano_wrapped(self, head_inputs, scale_head_inputs,
                                  img_shape, mask,
+                                 static_indices=None,
                                  memory_efficient_inference=False,
                                  minibatch_size=None):
         """Dense head with a horizontal wrap for full 360-degree panoramas.
@@ -1628,8 +1639,21 @@ class MapAnything(nn.Module, PyTorchModelHubMixin):
         H, W = img_shape
         patch = max(1, W // head_inputs[-1].shape[-1])
         mpx = M_TOK * patch
-        idx_w = mask.nonzero(as_tuple=True)[0]
-        idx_p = (~mask).nonzero(as_tuple=True)[0]
+        if static_indices is None:
+            idx_w = mask.nonzero(as_tuple=True)[0]
+            idx_p = (~mask).nonzero(as_tuple=True)[0]
+        else:
+            # Deployment buckets provide routing from host metadata, avoiding
+            # data-dependent nonzero/host reads during FX tracing and capture.
+            # Construct on device: a Python-list tensor causes synchronous H2D
+            # copies inside ACL Graph capture on this torch-npu version.
+            def device_indices(values):
+                if not values:
+                    return torch.empty((0,), device=mask.device, dtype=torch.long)
+                return torch.stack([torch.full((), v, device=mask.device, dtype=torch.long)
+                                    for v in values])
+            idx_w = device_indices(static_indices[0])
+            idx_p = device_indices(static_indices[1])
 
         padded = [torch.cat([x[idx_w][..., -M_TOK:], x[idx_w],
                              x[idx_w][..., :M_TOK]], dim=-1)
@@ -1929,7 +1953,8 @@ class MapAnything(nn.Module, PyTorchModelHubMixin):
             res.append(view_out)
         return res
 
-    def forward(self, views, memory_efficient_inference=False, minibatch_size=None):
+    def forward(self, views, memory_efficient_inference=False, minibatch_size=None,
+                static_pano_indices=None):
         """
         Forward pass performing the following operations:
         1. Encodes the N input views (images).
@@ -1954,6 +1979,7 @@ class MapAnything(nn.Module, PyTorchModelHubMixin):
                                     "camera_pose_trans" (tensor): Camera pose translations. Tensor of shape (B, 3). Camera pose is opencv (RDF) cam2world transformation.
                                     "is_metric_scale" (tensor): Boolean tensor indicating whether the geometric inputs are in metric scale or not. Tensor of shape (B, 1).
             memory_efficient_inference (bool): Whether to use memory efficient inference or not. This runs the dense prediction head (the memory bottleneck) in a memory efficient manner. Default is False.
+            static_pano_indices (tuple): Optional fixed (wrapped, plain) view-major indices for deployment graph buckets. Must match views; None retains dynamic routing.
             minibatch_size (int): Optional fixed minibatch size for memory-efficient inference. If provided, uses the specified minibatch size instead of computing it adaptively based on available GPU memory. Defaults to None (adaptive).
 
         Returns:
@@ -2092,11 +2118,13 @@ class MapAnything(nn.Module, PyTorchModelHubMixin):
             # Run the downstream heads
             # The uniform path stacks the views into B*V samples; concatenate the per-view flags
             _pw = torch.cat(pano_masks, dim=0) if pano_masks is not None else None
-            if _pw is not None and bool(_pw.any()) \
-                    and self.pred_head_type in ("dpt", "dpt+pose"):
+            has_wrap = (bool(static_pano_indices[0]) if static_pano_indices is not None
+                        else (_pw is not None and bool(_pw.any())))
+            if has_wrap and self.pred_head_type in ("dpt", "dpt+pose"):
                 dense_final_outputs, pose_final_outputs, scale_final_output = (
                     self._dense_head_pano_wrapped(
                         dense_head_inputs, scale_head_inputs, img_shape, _pw,
+                        static_indices=static_pano_indices,
                         memory_efficient_inference=memory_efficient_inference,
                         minibatch_size=minibatch_size,
                     )

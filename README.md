@@ -232,3 +232,7 @@ assets/             figures and the animation shown in this README
 The code is released under the Apache License 2.0 ([LICENSE](LICENSE)). It builds on MapAnything
 (Apache License 2.0) and UniCeption (BSD 3-Clause); see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)
 for these and for the data and assets used at run time.
+
+## Ascend 910B / TileLang
+
+See the [current NPU design](docs/ascend_910b_design.md) and [ACLGraph deployment guide](docs/ascend_910b_aclgraph.md) for the K1/K2/K3 implementation and validation.

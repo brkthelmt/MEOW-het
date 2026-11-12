@@ -28,6 +28,9 @@ class SwiGLUFFN(nn.Module):
 
     def forward(self, x: Tensor) -> Tensor:
         x12 = self.w12(x)
+        if x12.device.type == "npu":
+            import torch_npu
+            return self.w3(torch_npu.npu_swiglu(x12, dim=-1))
         x1, x2 = x12.chunk(2, dim=-1)
         hidden = F.silu(x1) * x2
         return self.w3(hidden)

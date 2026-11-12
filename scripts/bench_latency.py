@@ -28,6 +28,7 @@ import numpy as np
 import torch
 
 from mapanything.models import init_model_from_config
+from mapanything.utils.device import get_device
 
 
 def build_views(n, res, device, norm="dinov2", meow=False):
@@ -50,28 +51,28 @@ def build_views(n, res, device, norm="dinov2", meow=False):
 @torch.no_grad()
 def timed(model, views, iters, warmup, use_bf16):
     dev = views[0]["img"].device
-    amp = torch.autocast(device_type="cuda", dtype=torch.bfloat16) if use_bf16 else _null()
+    amp = torch.autocast(device_type=dev.type, dtype=torch.bfloat16) if use_bf16 else _null()
     # warmup
     for _ in range(warmup):
         with amp:
             _ = model(views)
-    if dev.type == "cuda":
-        torch.cuda.synchronize()
+    if dev.type in ("cuda", "npu"):
+        getattr(torch, dev.type).synchronize()
     # timed: host wall + cuda-event GPU time
     host = []
     gpu = []
     for _ in range(iters):
-        if dev.type == "cuda":
-            s = torch.cuda.Event(enable_timing=True)
-            e = torch.cuda.Event(enable_timing=True)
+        if dev.type in ("cuda", "npu"):
+            s = getattr(torch, dev.type).Event(enable_timing=True)
+            e = getattr(torch, dev.type).Event(enable_timing=True)
         t0 = time.perf_counter()
-        if dev.type == "cuda":
+        if dev.type in ("cuda", "npu"):
             s.record()
         with amp:
             _ = model(views)
-        if dev.type == "cuda":
+        if dev.type in ("cuda", "npu"):
             e.record()
-            torch.cuda.synchronize()
+            getattr(torch, dev.type).synchronize()
             gpu.append(s.elapsed_time(e))  # ms
         host.append((time.perf_counter() - t0) * 1000.0)
     return np.array(host), np.array(gpu)
@@ -98,13 +99,13 @@ def main():
     ap.add_argument("--res", type=int, default=518)
     ap.add_argument("--iters", type=int, default=30)
     ap.add_argument("--warmup", type=int, default=8)
-    ap.add_argument("--device", default="cuda")
+    ap.add_argument("--device", default=str(get_device()))
     ap.add_argument("--meow", action="store_true",
                     help="build the MEOW network (aspect-ratio encoder, panorama wrap on every view)")
     args = ap.parse_args()
 
     dev = torch.device(args.device)
-    print(f"[gpu] {torch.cuda.get_device_name(dev) if dev.type=='cuda' else 'cpu'}")
+    print(f"[gpu] {getattr(torch, dev.type).get_device_name(dev) if dev.type in ('cuda', 'npu') else 'cpu'}")
     print(f"[cfg] num_views={args.num_views} res={args.res} iters={args.iters} warmup={args.warmup}")
 
     c = torch.load(args.ckpt, map_location="cpu", weights_only=False)
@@ -136,9 +137,9 @@ def main():
             host, gpu = timed(model, views, args.iters, args.warmup, use_bf16)
             stats("end2end(host)", host)
             stats("gpu-forward", gpu)
-            if dev.type == "cuda":
-                print(f"  peak_mem={torch.cuda.max_memory_allocated()/1e9:.2f}GB")
-                torch.cuda.reset_peak_memory_stats()
+            if dev.type in ("cuda", "npu"):
+                print(f"  peak_mem={getattr(torch, dev.type).max_memory_allocated()/1e9:.2f}GB")
+                getattr(torch, dev.type).reset_peak_memory_stats()
         except Exception as exc:  # noqa: BLE001
             print(f"  FAILED: {exc}")
 

@@ -229,12 +229,22 @@ class DinoVisionTransformer(nn.Module):
         else:
             # Simply specify an output size instead of a scale factor
             kwargs["size"] = (w0, h0)
-        patch_pos_embed = nn.functional.interpolate(
-            patch_pos_embed.reshape(1, M, M, dim).permute(0, 3, 1, 2),
-            mode="bicubic",
-            antialias=self.interpolate_antialias,
-            **kwargs,
-        )
+        patch_pos_embed = patch_pos_embed.reshape(1, M, M, dim).permute(0, 3, 1, 2)
+        if patch_pos_embed.device.type == "npu":
+            # FakeTensor bicubic otherwise selects unsupported channels-last.
+            patch_pos_embed = patch_pos_embed.contiguous()
+        if patch_pos_embed.device.type == "npu" and torch.compiler.is_compiling():
+            from mapanything.utils.npu_graph_ops import bicubic
+            scales = kwargs.get("scale_factor", (-1.0, -1.0))
+            patch_pos_embed = bicubic(patch_pos_embed, w0, h0,
+                                     scales[0], scales[1], self.interpolate_antialias)
+        else:
+            patch_pos_embed = nn.functional.interpolate(
+                patch_pos_embed,
+                mode="bicubic",
+                antialias=self.interpolate_antialias,
+                **kwargs,
+            )
         assert (w0, h0) == patch_pos_embed.shape[-2:]
         patch_pos_embed = patch_pos_embed.permute(0, 2, 3, 1).view(1, -1, dim)
         return torch.cat((class_pos_embed.unsqueeze(0), patch_pos_embed), dim=1).to(

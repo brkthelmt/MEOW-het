@@ -30,6 +30,8 @@ import torch
 import torch.distributed as dist
 from torch import inf
 
+from mapanything.utils.device import collective_device, get_device
+
 
 class SmoothedValue(object):
     """
@@ -56,7 +58,9 @@ class SmoothedValue(object):
         """
         if not is_dist_avail_and_initialized():
             return
-        t = torch.tensor([self.count, self.total], dtype=torch.float64, device="cuda")
+        device = collective_device()
+        dtype = torch.float32 if device.type == "npu" else torch.float64
+        t = torch.tensor([self.count, self.total], dtype=dtype, device=device)
         dist.barrier()
         dist.all_reduce(t)
         t = t.tolist()
@@ -385,8 +389,10 @@ def init_distributed_mode(args):
 
     args.distributed = True
 
-    torch.cuda.set_device(args.gpu)
-    args.dist_backend = "nccl"
+    device = get_device()
+    if device.type in ("cuda", "npu"):
+        getattr(torch, device.type).set_device(args.gpu)
+    args.dist_backend = {"cuda": "nccl", "npu": "hccl"}.get(device.type, "gloo")
     print(
         "| distributed init (rank {}): {}, gpu {}".format(
             args.rank, args.dist_url, args.gpu
@@ -413,13 +419,17 @@ class NativeScalerWithGradNormCount:
 
     state_dict_key = "amp_scaler"
 
-    def __init__(self, enabled=True):
+    def __init__(self, enabled=True, device=None):
         """Initialize the scaler.
 
         Args:
             enabled (bool): Whether to enable gradient scaling. Default: True
         """
-        self._scaler = torch.GradScaler("cuda", enabled=enabled)
+        device = get_device(device)
+        if device.type == "npu":
+            self._scaler = torch.npu.amp.GradScaler(enabled=enabled)
+        else:
+            self._scaler = torch.GradScaler(device.type, enabled=enabled)
 
     def __call__(
         self,
@@ -642,7 +652,7 @@ def all_reduce_mean(x):
     """
     world_size = get_world_size()
     if world_size > 1:
-        x_reduce = torch.tensor(x).cuda()
+        x_reduce = torch.tensor(x, dtype=torch.float32, device=collective_device())
         dist.all_reduce(x_reduce)
         x_reduce /= world_size
         return x_reduce.item()

@@ -38,6 +38,7 @@ ROOT = THIS.parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(THIS.parent))  # sibling scripts (meow_model, eval_2d3ds_pose_v2, erp_detect)
 
+from mapanything.utils.device import get_device, empty_cache, synchronize
 from mapanything.models import init_model_from_config  # noqa: E402
 from mapanything.utils.image import load_images  # noqa: E402
 
@@ -97,6 +98,7 @@ def build_model(device: str, ar: bool = False) -> torch.nn.Module:
             "model=mapanything",
             *task_overrides,
             "model.encoder.uses_torch_hub=true",
+            "++model.encoder.torch_hub_pretrained=false",
         ],
     )
     model = init_model(
@@ -132,7 +134,7 @@ def parse_args():
                     help="For :wrap ckpts only: per-view pano_wrap flag. "
                          "auto = blind full-ERP detector (erp_detect); "
                          "on/off = force all views.")
-    ap.add_argument("--device", default="cuda")
+    ap.add_argument("--device", default=str(get_device()))
     ap.add_argument(
         "--heterogeneous", action="store_true",
         help="Load each image independently so they keep their own (H,W) and aspect ratio. "
@@ -389,7 +391,7 @@ def main():
         if model is None or variant != cur_var:
             if model is not None:
                 del model
-                torch.cuda.empty_cache()
+                empty_cache(args.device)
             if variant:
                 print(f"[model] build ar+{variant} (aspect-ratio encoder) on {args.device}")
                 from meow_model import build_model_with_ar
@@ -431,8 +433,8 @@ def main():
                 apply_confidence_mask=args.apply_confidence_mask,
                 confidence_percentile=args.confidence_percentile,
             )
-        if args.device.startswith("cuda"):
-            torch.cuda.synchronize()
+        if args.device.startswith(("cuda", "npu")):
+            synchronize(args.device)
         dt = time.time() - t0
         print(f"  infer: {dt:.2f} s")
 
@@ -496,8 +498,8 @@ def main():
             "ply": str(ply_path.name),
         }
 
-        if args.device.startswith("cuda"):
-            torch.cuda.empty_cache()
+        if args.device.startswith(("cuda", "npu")):
+            empty_cache(args.device)
 
     summary_path = args.out / "summary.json"
     json.dump(summary, open(summary_path, "w"), indent=2)

@@ -1,0 +1,8 @@
+# Additional source-build/runtime dependencies; keep the existing torch/torch-npu.
+Cython==3.3.1
+cloudpickle==3.1.2
+ml_dtypes==0.6.0
+pybind11==3.1.0
+decorator==5.3.1
+tornado==6.5.10
+cmake==3.31.10

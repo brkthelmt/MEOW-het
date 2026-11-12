@@ -81,7 +81,8 @@ class TupleTimer:
     numpy-only for envs without it)."""
 
     def __init__(self, device=None):
-        self.device = device if (device and str(device).startswith("cuda")) else None
+        self.device = device if (device and str(device).startswith(("cuda", "npu"))) else None
+        self.backend = str(device).split(":")[0] if self.device is not None else None
         self.sec = float("nan")
         self.vram_gb = float("nan")
 
@@ -90,8 +91,8 @@ class TupleTimer:
         if self.device is not None:
             try:
                 import torch
-                torch.cuda.synchronize(self.device)
-                torch.cuda.reset_peak_memory_stats(self.device)
+                getattr(torch, self.backend).synchronize(self.device)
+                getattr(torch, self.backend).reset_peak_memory_stats(self.device)
             except Exception:
                 self.device = None
         self._t0 = time.perf_counter()
@@ -102,8 +103,8 @@ class TupleTimer:
         if self.device is not None:
             try:
                 import torch
-                torch.cuda.synchronize(self.device)
-                self.vram_gb = torch.cuda.max_memory_allocated(self.device) / 1e9
+                getattr(torch, self.backend).synchronize(self.device)
+                self.vram_gb = getattr(torch, self.backend).max_memory_allocated(self.device) / 1e9
             except Exception:
                 pass
         self.sec = time.perf_counter() - self._t0

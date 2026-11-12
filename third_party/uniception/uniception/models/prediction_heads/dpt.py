@@ -301,11 +301,11 @@ class DPTRegressionProcessor(nn.Module):
 
         if not self.checkpoint_gradient:
             x = self.conv1(x)
-            x = F.interpolate(x, size=output_shape, mode="bilinear", align_corners=True)
+            x = _interpolate_bilinear(x, output_shape)
             x = self.conv2(x)
         else:
             x = self.conv1(x)
-            x = F.interpolate(x, size=output_shape, mode="bilinear", align_corners=True)
+            x = _interpolate_bilinear(x, output_shape)
             x = checkpoint(self.conv2, x, use_reentrant=False)
 
         return PixelTaskOutput(decoded_channels=x)
@@ -374,7 +374,7 @@ class DPTSegmentationProcessor(nn.Module):
         output_shape = dpt_processor_input.target_output_shape
 
         x = self.conv(x)
-        x = F.interpolate(x, size=output_shape, mode="bilinear", align_corners=True)
+        x = _interpolate_bilinear(x, output_shape)
 
         return PixelTaskOutput(decoded_channels=x)
 
@@ -571,6 +571,15 @@ class DPTFeatureDoubleUpsampling(nn.Module):
         return DPTFeatureInput(
             features_upsampled_8x=feature_upsampled_2x, target_output_shape=dpt_input.target_output_shape
         )
+
+
+
+def _interpolate_bilinear(x, output_shape):
+    # Preserve the installed NPU interpolation implementation through AOT.
+    if x.device.type == "npu" and torch.compiler.is_compiling():
+        from mapanything.utils.npu_graph_ops import bilinear
+        return bilinear(x, output_shape[0], output_shape[1], True)
+    return F.interpolate(x, size=output_shape, mode="bilinear", align_corners=True)
 
 
 if __name__ == "__main__":
